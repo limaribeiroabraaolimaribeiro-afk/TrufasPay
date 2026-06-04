@@ -1,0 +1,35 @@
+{
+  "name": "TrufasPAY - Controle de Fiado",
+  "short_name": "TrufasPAY",
+  "description": "Sistema de controle de vendas fiadas de trufas com cobrança via WhatsApp",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#5B21B6",
+  "theme_color": "#7C3AED",
+  "lang": "pt-BR",
+  "categories": ["finance", "business"],
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Nova Venda",
+      "short_name": "Nova Venda",
+      "url": "./index.html?page=form",
+      "description": "Registrar nova venda fiada"
+    },
+    {
+      "name": "Ver Cobranças",
+      "short_name": "Cobranças",
+      "url": "./index.html?page=lista",
+      "description": "Ver todas as cobranças"
+    }
+  ]
+}
