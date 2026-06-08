@@ -70,12 +70,37 @@ function loadData() {
 
 function fixDataIntegrity() {
   let changed = false;
-  state.clients.forEach(c => {
-    if (c.status === STATUS.PAGO && c.saldoPendente > 0) {
-      c.saldoPendente = 0;
+  const now   = new Date().toISOString();
+
+  state.clients = state.clients.map(c => {
+    const st = normalizeStatus(c.status);
+
+    if (st === STATUS.PAGO) {
+      const needsFix = c.status !== 'pago'
+        || Number(c.saldoPendente) !== 0
+        || (c.historicoCompras || []).some(p => normalizeStatus(p.status) !== 'pago');
+
+      if (needsFix) {
+        changed = true;
+        return {
+          ...c,
+          status:        'pago',
+          saldoPendente: 0,
+          historicoCompras: (c.historicoCompras || []).map(p => ({
+            ...p,
+            status:        'pago',
+            dataPagamento: p.dataPagamento || c.dataPagamento || now
+          }))
+        };
+      }
+    } else if (c.status !== st) {
       changed = true;
+      return { ...c, status: st };
     }
+
+    return c;
   });
+
   if (changed) saveData();
 }
 
@@ -189,8 +214,12 @@ function cleanWhatsApp(raw) {
   return String(raw).replace(/\D/g, '');
 }
 
+function normalizeStatus(status) {
+  return String(status || '').trim().toLowerCase();
+}
+
 function isOverdue(client) {
-  if (client.status === STATUS.PAGO) return false;
+  if (normalizeStatus(client.status) === STATUS.PAGO) return false;
   return client.dataCobranca && client.dataCobranca < todayISO();
 }
 
@@ -198,9 +227,10 @@ function isOverdue(client) {
    STATUS COMPUTATION
 ═══════════════════════════════════════ */
 function getStatus(client) {
-  if (client.status === STATUS.PAGO)    return STATUS.PAGO;
-  if (client.status === STATUS.COBRADO) return STATUS.COBRADO;
-  if (isOverdue(client))                return STATUS.ATRASADO;
+  const s = normalizeStatus(client.status);
+  if (s === STATUS.PAGO)    return STATUS.PAGO;
+  if (s === STATUS.COBRADO) return STATUS.COBRADO;
+  if (isOverdue(client))    return STATUS.ATRASADO;
   return STATUS.PENDENTE;
 }
 
@@ -305,12 +335,15 @@ function setClientStatus(id, newStatus) {
 
   if (newStatus === STATUS.PAGO) {
     const now            = new Date().toISOString();
-    client.dataPagamento = now;
+    client.status        = 'pago';
     client.saldoPendente = 0;
+    client.dataPagamento = now;
     if (!client.ultimaCobranca) client.ultimaCobranca = now;
-    client.historicoCompras.forEach(p => {
-      if (p.status === 'pendente') p.status = 'pago';
-    });
+    client.historicoCompras = (client.historicoCompras || []).map(p => ({
+      ...p,
+      status:        'pago',
+      dataPagamento: p.dataPagamento || now
+    }));
   }
 
   saveData();
@@ -525,10 +558,11 @@ function buildSaleCard(client) {
   const st      = client._status;
   const sel     = state.selectedIds.has(client.id);
   const overdue = st === STATUS.ATRASADO;
-  const isPago  = st === STATUS.PAGO;
+  // Usa normalizeStatus para ser imune a capitalização ("Pago", "PAGO", "pago")
+  const isPago  = normalizeStatus(client.status) === STATUS.PAGO;
 
   // Cliente pago sempre exibe R$ 0,00, independente do que estiver em saldoPendente
-  const saldo = isPago ? 0 : Math.max(0, client.saldoPendente);
+  const saldo = isPago ? 0 : Math.max(0, Number(client.saldoPendente) || 0);
 
   const lastPurchase = client.historicoCompras[0];
   const extraCount   = client.historicoCompras.length - 1;
