@@ -52,6 +52,7 @@ function loadData() {
     if (raw) {
       const parsed = JSON.parse(raw);
       state.clients = Array.isArray(parsed.clients) ? parsed.clients : [];
+      fixDataIntegrity();
     } else {
       // Tenta migrar dados do formato antigo (v1)
       const oldRaw = localStorage.getItem('trufaspay_v1');
@@ -65,6 +66,17 @@ function loadData() {
   } catch (_) {
     state.clients = [];
   }
+}
+
+function fixDataIntegrity() {
+  let changed = false;
+  state.clients.forEach(c => {
+    if (c.status === STATUS.PAGO && c.saldoPendente > 0) {
+      c.saldoPendente = 0;
+      changed = true;
+    }
+  });
+  if (changed) saveData();
 }
 
 function migrateSalesToClients(sales) {
@@ -515,6 +527,9 @@ function buildSaleCard(client) {
   const overdue = st === STATUS.ATRASADO;
   const isPago  = st === STATUS.PAGO;
 
+  // Cliente pago sempre exibe R$ 0,00, independente do que estiver em saldoPendente
+  const saldo = isPago ? 0 : Math.max(0, client.saldoPendente);
+
   const lastPurchase = client.historicoCompras[0];
   const extraCount   = client.historicoCompras.length - 1;
 
@@ -536,9 +551,7 @@ function buildSaleCard(client) {
     : '';
 
   const actionsHtml = `
-    <button class="btn btn-sm btn-whatsapp" onclick="openWhatsApp('${client.id}')">
-      ${svgWa()} Cobrar
-    </button>
+    ${!isPago ? `<button class="btn btn-sm btn-whatsapp" onclick="openWhatsApp('${client.id}')">${svgWa()} Cobrar</button>` : ''}
     ${!isPago ? `<button class="btn btn-sm btn-success" onclick="confirmMarkPaid('${client.id}')">✓ Pago</button>` : ''}
     <button class="btn btn-sm btn-secondary" onclick="navigate('form', {editId:'${client.id}'})">
       ${svgEdit()} Editar
@@ -564,7 +577,7 @@ function buildSaleCard(client) {
       <div class="card-body">
         <div class="card-product">
           <div class="product-info">${productLine}</div>
-          <div class="product-value">${fmtCurrency(client.saldoPendente)}</div>
+          <div class="product-value">${fmtCurrency(saldo)}</div>
         </div>
         ${dueRow}
         ${obsRow}
@@ -671,6 +684,10 @@ function setFilter(f) {
 function openWhatsApp(id) {
   const client = state.clients.find(c => c.id === id);
   if (!client) return;
+  if (getStatus(client) === STATUS.PAGO || client.saldoPendente <= 0) {
+    showToast('Este cliente não tem saldo pendente', 'info');
+    return;
+  }
 
   const msg  = buildMessage(client);
   const link = buildWaLink(client.whatsapp, msg);
