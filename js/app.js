@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════
-   TRUFASPAY v1.0.0
+   TRUFASPAY v2.0.0
    Sistema de controle de vendas fiadas de trufas
-   Storage: localStorage | Offline: Service Worker
+   Modelo: por cliente/WhatsApp | Storage: localStorage
    ═══════════════════════════════════════════════ */
 
 'use strict';
@@ -9,8 +9,8 @@
 /* ═══════════════════════════════════════
    CONSTANTS
 ═══════════════════════════════════════ */
-const APP_VERSION = '1.0.0';
-const STORAGE_KEY = 'trufaspay_v1';
+const APP_VERSION = '2.0.0';
+const STORAGE_KEY = 'trufaspay_v2';
 const UNIT_PRICE  = 3.33;
 
 const STATUS = { PENDENTE: 'pendente', ATRASADO: 'atrasado', COBRADO: 'cobrado', PAGO: 'pago' };
@@ -33,13 +33,13 @@ const STATUS_ICON = {
    APPLICATION STATE
 ═══════════════════════════════════════ */
 const state = {
-  sales:       [],
+  clients:     [],
   currentPage: 'dashboard',
   prevPage:    null,
   filter:      'all',
   selectedIds: new Set(),
   editingId:   null,
-  queue:       null,   // { items: Sale[], index: number }
+  queue:       null,
   installPrompt: null
 };
 
@@ -51,11 +51,64 @@ function loadData() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      state.sales = Array.isArray(parsed.sales) ? parsed.sales : [];
+      state.clients = Array.isArray(parsed.clients) ? parsed.clients : [];
+    } else {
+      // Tenta migrar dados do formato antigo (v1)
+      const oldRaw = localStorage.getItem('trufaspay_v1');
+      if (oldRaw) {
+        const oldData = JSON.parse(oldRaw);
+        if (Array.isArray(oldData.sales) && oldData.sales.length > 0) {
+          migrateSalesToClients(oldData.sales);
+        }
+      }
     }
   } catch (_) {
-    state.sales = [];
+    state.clients = [];
   }
+}
+
+function migrateSalesToClients(sales) {
+  const byWa = {};
+  sales.forEach(s => {
+    const wa = String(s.whatsapp).replace(/\D/g, '');
+    if (!byWa[wa]) byWa[wa] = [];
+    byWa[wa].push(s);
+  });
+
+  state.clients = Object.values(byWa).map(group => {
+    group.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const latest  = group[0];
+    const pending = group.filter(s => s.status !== 'pago');
+    const saldo   = pending.reduce((sum, s) => sum + s.totalValue, 0);
+
+    return {
+      id:               latest.id,
+      nome:             latest.clientName,
+      whatsapp:         String(latest.whatsapp).replace(/\D/g, ''),
+      saldoPendente:    parseFloat(saldo.toFixed(2)),
+      status:           pending.length > 0
+                          ? (pending.some(s => s.status === 'cobrado') ? 'cobrado' : 'pendente')
+                          : 'pago',
+      dataCobranca:     latest.dueDate,
+      ultimaCompra:     latest.createdAt,
+      ultimaCobranca:   latest.lastChargedAt || null,
+      dataPagamento:    pending.length === 0 ? (latest.paidAt || null) : null,
+      observacao:       latest.observation || '',
+      historicoCompras: group.map(s => ({
+        id:            s.id,
+        quantidade:    s.quantity,
+        valorUnitario: s.unitPrice || UNIT_PRICE,
+        valorTotal:    s.totalValue,
+        dataCompra:    s.createdAt,
+        dataCobranca:  s.dueDate,
+        observacao:    s.observation || '',
+        status:        s.status === 'pago' ? 'pago' : 'pendente'
+      }))
+    };
+  });
+
+  saveData();
+  setTimeout(() => showToast(`${state.clients.length} clientes migrados do banco antigo!`, 'success'), 500);
 }
 
 function saveData() {
@@ -63,7 +116,7 @@ function saveData() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       version:   APP_VERSION,
       updatedAt: new Date().toISOString(),
-      sales:     state.sales
+      clients:   state.clients
     }));
   } catch (_) {
     showToast('Erro: armazenamento cheio', 'error');
@@ -120,88 +173,134 @@ function initials(name) {
   return (name || '?').trim().charAt(0).toUpperCase();
 }
 
-function isOverdue(sale) {
-  return sale.dueDate && sale.dueDate < todayISO();
+function cleanWhatsApp(raw) {
+  return String(raw).replace(/\D/g, '');
+}
+
+function isOverdue(client) {
+  if (client.status === STATUS.PAGO) return false;
+  return client.dataCobranca && client.dataCobranca < todayISO();
 }
 
 /* ═══════════════════════════════════════
    STATUS COMPUTATION
 ═══════════════════════════════════════ */
-function getStatus(sale) {
-  if (sale.status === STATUS.PAGO || sale.status === STATUS.COBRADO) return sale.status;
-  if (isOverdue(sale)) return STATUS.ATRASADO;
+function getStatus(client) {
+  if (client.status === STATUS.PAGO)    return STATUS.PAGO;
+  if (client.status === STATUS.COBRADO) return STATUS.COBRADO;
+  if (isOverdue(client))                return STATUS.ATRASADO;
   return STATUS.PENDENTE;
 }
 
 /* ═══════════════════════════════════════
    WHATSAPP MESSAGE
 ═══════════════════════════════════════ */
-function buildMessage(sale) {
-  const qty = sale.quantity || 1;
-  return `Oi, ${sale.clientName}! Tudo bem?\n\nPassando para lembrar que ficou pendente o valor de ${fmtCurrency(sale.totalValue)} referente a ${qty} trufa${qty !== 1 ? 's' : ''}.\n\nQuando pagar, me avisa por aqui para eu dar baixa no sistema. 😊`;
+function buildMessage(client) {
+  return `Oi, ${client.nome}! Tudo bem?\n\nPassando para lembrar que ficou pendente o valor de ${fmtCurrency(client.saldoPendente)} referente às trufas.\n\nQuando pagar, me avisa por aqui para eu dar baixa no sistema. 😊`;
 }
 
 /* ═══════════════════════════════════════
-   BUSINESS LOGIC — CRUD
+   BUSINESS LOGIC — CLIENTES / COMPRAS
 ═══════════════════════════════════════ */
-function createSale(data) {
+function findClientByWhatsApp(whatsapp) {
+  const wa = cleanWhatsApp(whatsapp);
+  return state.clients.find(c => c.whatsapp === wa) || null;
+}
+
+function registerPurchase(data) {
+  const wa    = cleanWhatsApp(data.whatsapp);
   const qty   = parseFloat(data.quantity) || 0;
-  const price = UNIT_PRICE;
-  const sale  = {
+  const total = parseFloat((qty * UNIT_PRICE).toFixed(2));
+  const now   = new Date().toISOString();
+  const obs   = (data.observation || '').trim();
+
+  const purchase = {
     id:            uid(),
-    clientName:    data.clientName.trim(),
-    whatsapp:      data.whatsapp.replace(/\D/g, ''),
-    product:       'Trufas',
-    quantity:      qty,
-    unitPrice:     price,
-    totalValue:    parseFloat((qty * price).toFixed(2)),
-    dueDate:       data.dueDate,
-    observation:   (data.observation || '').trim(),
-    status:        STATUS.PENDENTE,
-    createdAt:     new Date().toISOString(),
-    lastChargedAt: null,
-    paidAt:        null
+    quantidade:    qty,
+    valorUnitario: UNIT_PRICE,
+    valorTotal:    total,
+    dataCompra:    now,
+    dataCobranca:  data.dueDate,
+    observacao:    obs,
+    status:        'pendente'
   };
-  state.sales.unshift(sale);
+
+  const existing = findClientByWhatsApp(wa);
+
+  if (existing) {
+    existing.nome          = data.clientName.trim();
+    existing.saldoPendente = parseFloat((existing.saldoPendente + total).toFixed(2));
+    existing.status        = STATUS.PENDENTE;
+    existing.dataCobranca  = data.dueDate;
+    existing.ultimaCompra  = now;
+    if (obs) existing.observacao = obs;
+    existing.historicoCompras.unshift(purchase);
+    // Move para o topo da lista
+    state.clients = [existing, ...state.clients.filter(c => c.whatsapp !== wa)];
+  } else {
+    const client = {
+      id:               uid(),
+      nome:             data.clientName.trim(),
+      whatsapp:         wa,
+      saldoPendente:    total,
+      status:           STATUS.PENDENTE,
+      dataCobranca:     data.dueDate,
+      ultimaCompra:     now,
+      ultimaCobranca:   null,
+      dataPagamento:    null,
+      observacao:       obs,
+      historicoCompras: [purchase]
+    };
+    state.clients.unshift(client);
+  }
+
   saveData();
-  return sale;
 }
 
-function updateSale(id, data) {
-  const idx = state.sales.findIndex(s => s.id === id);
-  if (idx < 0) return null;
-  const s     = state.sales[idx];
-  const qty   = parseFloat(data.quantity) || 0;
-  const price = UNIT_PRICE;
-  Object.assign(s, {
-    clientName:  data.clientName.trim(),
-    whatsapp:    data.whatsapp.replace(/\D/g, ''),
-    product:     'Trufas',
-    quantity:    qty,
-    unitPrice:   price,
-    totalValue:  parseFloat((qty * price).toFixed(2)),
-    dueDate:     data.dueDate,
-    observation: (data.observation || '').trim()
-  });
+function updateClient(id, data) {
+  const client = state.clients.find(c => c.id === id);
+  if (!client) return false;
+
+  const wa       = cleanWhatsApp(data.whatsapp);
+  const conflict = state.clients.find(c => c.whatsapp === wa && c.id !== id);
+  if (conflict) {
+    showToast('Este WhatsApp já está cadastrado para outro cliente', 'error');
+    return false;
+  }
+
+  client.nome       = data.clientName.trim();
+  client.whatsapp   = wa;
+  client.observacao = (data.observation || '').trim();
   saveData();
-  return s;
+  return true;
 }
 
-function deleteSale(id) {
-  state.sales = state.sales.filter(s => s.id !== id);
+function deleteClient(id) {
+  state.clients = state.clients.filter(c => c.id !== id);
   state.selectedIds.delete(id);
   saveData();
 }
 
-function setSaleStatus(id, newStatus) {
-  const s = state.sales.find(s => s.id === id);
-  if (!s) return;
-  s.status = newStatus;
-  if (newStatus === STATUS.COBRADO) s.lastChargedAt = new Date().toISOString();
-  if (newStatus === STATUS.PAGO) {
-    s.paidAt = new Date().toISOString();
-    if (!s.lastChargedAt) s.lastChargedAt = s.paidAt;
+function setClientStatus(id, newStatus) {
+  const client = state.clients.find(c => c.id === id);
+  if (!client) return;
+
+  client.status = newStatus;
+
+  if (newStatus === STATUS.COBRADO) {
+    client.ultimaCobranca = new Date().toISOString();
   }
+
+  if (newStatus === STATUS.PAGO) {
+    const now            = new Date().toISOString();
+    client.dataPagamento = now;
+    client.saldoPendente = 0;
+    if (!client.ultimaCobranca) client.ultimaCobranca = now;
+    client.historicoCompras.forEach(p => {
+      if (p.status === 'pendente') p.status = 'pago';
+    });
+  }
+
   saveData();
 }
 
@@ -209,16 +308,20 @@ function setSaleStatus(id, newStatus) {
    STATS
 ═══════════════════════════════════════ */
 function getStats() {
-  const all = state.sales.map(s => ({ ...s, _status: getStatus(s) }));
+  const all       = state.clients.map(c => ({ ...c, _status: getStatus(c) }));
+  const active    = all.filter(c => c._status !== STATUS.PAGO);
+  const atrasados = all.filter(c => c._status === STATUS.ATRASADO);
+  const pagos     = all.filter(c => c._status === STATUS.PAGO);
 
-  const active    = all.filter(s => s._status !== STATUS.PAGO);
-  const atrasados = all.filter(s => s._status === STATUS.ATRASADO);
-  const pagos     = all.filter(s => s._status === STATUS.PAGO);
+  const totalRecebido = state.clients
+    .flatMap(c => c.historicoCompras)
+    .filter(p => p.status === 'pago')
+    .reduce((sum, p) => sum + p.valorTotal, 0);
 
   return {
-    totalPendente:  active.reduce((a, s) => a + s.totalValue, 0),
-    totalRecebido:  pagos.reduce((a, s) => a + s.totalValue, 0),
-    clientesDevendo: new Set(active.map(s => s.clientName)).size,
+    totalPendente:   active.reduce((a, c) => a + c.saldoPendente, 0),
+    totalRecebido:   parseFloat(totalRecebido.toFixed(2)),
+    clientesDevendo: active.length,
     totalAtrasados:  atrasados.length,
     qtdAtivos:       active.length,
     qtdPagos:        pagos.length,
@@ -230,14 +333,14 @@ function getStats() {
    FILTERING
 ═══════════════════════════════════════ */
 function getFiltered() {
-  return state.sales
-    .map(s => ({ ...s, _status: getStatus(s) }))
-    .filter(s => state.filter === 'all' || s._status === state.filter);
+  return state.clients
+    .map(c => ({ ...c, _status: getStatus(c) }))
+    .filter(c => state.filter === 'all' || c._status === state.filter);
 }
 
 function getCounts() {
-  const counts = { all: state.sales.length, pendente: 0, atrasado: 0, cobrado: 0, pago: 0 };
-  state.sales.forEach(s => { const st = getStatus(s); counts[st]++; });
+  const counts = { all: state.clients.length, pendente: 0, atrasado: 0, cobrado: 0, pago: 0 };
+  state.clients.forEach(c => { const st = getStatus(c); counts[st]++; });
   return counts;
 }
 
@@ -245,31 +348,26 @@ function getCounts() {
    NAVIGATION
 ═══════════════════════════════════════ */
 function navigate(page, opts = {}) {
-  state.prevPage  = state.currentPage;
+  state.prevPage    = state.currentPage;
   state.currentPage = page;
 
   if (opts.editId !== undefined) state.editingId = opts.editId;
   else if (page !== 'form')      state.editingId = null;
 
-  // Hide all pages
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
 
   const target = document.getElementById(`page-${page}`);
   if (target) { target.classList.add('active'); target.scrollTop = 0; }
 
-  // Update bottom nav active state
   document.querySelectorAll('.nav-item[data-page]').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.page === page);
   });
 
-  // Header: title + back button
   updateHeader(page);
 
-  // FAB visibility
   const fab = document.getElementById('fab');
   if (fab) fab.classList.toggle('hidden', page === 'form');
 
-  // Render
   switch (page) {
     case 'dashboard': renderDashboard(); break;
     case 'lista':     renderLista();     break;
@@ -285,7 +383,7 @@ function updateHeader(page) {
   const titles = {
     dashboard: 'TrufasPAY',
     lista:     'Cobranças',
-    form:      state.editingId ? 'Editar Venda' : 'Nova Venda'
+    form:      state.editingId ? 'Editar Cliente' : 'Nova Venda'
   };
   const titleEl = document.getElementById('header-title');
   const backBtn = document.getElementById('btn-back');
@@ -302,9 +400,9 @@ function updateHeader(page) {
 function renderDashboard() {
   const stats = getStats();
 
-  setEl('stat-pendente', fmtCurrency(stats.totalPendente));
-  setEl('stat-recebido', fmtCurrency(stats.totalRecebido));
-  setEl('stat-clientes', stats.clientesDevendo);
+  setEl('stat-pendente',  fmtCurrency(stats.totalPendente));
+  setEl('stat-recebido',  fmtCurrency(stats.totalRecebido));
+  setEl('stat-clientes',  stats.clientesDevendo);
   setEl('stat-atrasados', stats.totalAtrasados);
 
   const btnAtrasados = document.getElementById('btn-cobrar-atrasados');
@@ -321,7 +419,7 @@ function renderRecentSales() {
   const container = document.getElementById('recent-sales');
   if (!container) return;
 
-  const recent = state.sales.slice(0, 5);
+  const recent = state.clients.slice(0, 5);
   if (recent.length === 0) {
     container.innerHTML = `
       <div class="empty-state">
@@ -335,17 +433,18 @@ function renderRecentSales() {
     return;
   }
 
-  container.innerHTML = recent.map(sale => {
-    const st = getStatus(sale);
+  container.innerHTML = recent.map(client => {
+    const st = getStatus(client);
+    const n  = client.historicoCompras.length;
     return `
       <div class="sale-card-mini" onclick="navigate('lista')">
-        <div class="mini-avatar">${escHtml(initials(sale.clientName))}</div>
+        <div class="mini-avatar">${escHtml(initials(client.nome))}</div>
         <div class="mini-info">
-          <div class="mini-name">${escHtml(sale.clientName)}</div>
-          <div class="mini-product">Trufas × ${sale.quantity}</div>
+          <div class="mini-name">${escHtml(client.nome)}</div>
+          <div class="mini-product">${n} compra${n !== 1 ? 's' : ''}</div>
         </div>
         <div class="mini-right">
-          <div class="mini-value">${fmtCurrency(sale.totalValue)}</div>
+          <div class="mini-value">${fmtCurrency(client.saldoPendente)}</div>
           <span class="status-badge badge-${st}">${STATUS_LABEL[st]}</span>
         </div>
       </div>`;
@@ -362,7 +461,7 @@ function renderLista() {
 }
 
 function renderFilterBar() {
-  const counts = getCounts();
+  const counts  = getCounts();
   const filters = [
     { key: 'all',      label: 'Todos'     },
     { key: 'pendente', label: 'Pendentes' },
@@ -387,9 +486,7 @@ function renderBulkBar() {
   if (!bar) return;
   const n = state.selectedIds.size;
   bar.classList.toggle('hidden', n === 0);
-  if (label) {
-    label.textContent = `${n} selecionado${n !== 1 ? 's' : ''}`;
-  }
+  if (label) label.textContent = `${n} selecionado${n !== 1 ? 's' : ''}`;
 }
 
 function renderSaleCards() {
@@ -402,71 +499,72 @@ function renderSaleCards() {
     container.innerHTML = `
       <div class="empty-state">
         <div class="empty-icon">📋</div>
-        <div class="empty-title">Nenhuma cobrança${filterName ? ' ' + filterName.toLowerCase() : ''}</div>
+        <div class="empty-title">Nenhum cliente${filterName ? ' ' + filterName.toLowerCase() : ''}</div>
         <div class="empty-text">${state.filter === 'all' ? 'Registre sua primeira venda fiada.' : 'Nenhum resultado para este filtro.'}</div>
         ${state.filter === 'all' ? `<button class="btn btn-primary" onclick="navigate('form')">${svgPlus()} Nova Venda</button>` : ''}
       </div>`;
     return;
   }
 
-  container.innerHTML = filtered.map(sale => buildSaleCard(sale)).join('');
+  container.innerHTML = filtered.map(client => buildSaleCard(client)).join('');
 }
 
-function buildSaleCard(sale) {
-  const st       = sale._status;
-  const sel      = state.selectedIds.has(sale.id);
-  const overdue  = st === STATUS.ATRASADO;
-  const isPago   = st === STATUS.PAGO;
+function buildSaleCard(client) {
+  const st      = client._status;
+  const sel     = state.selectedIds.has(client.id);
+  const overdue = st === STATUS.ATRASADO;
+  const isPago  = st === STATUS.PAGO;
 
-  let dueRow = `<div class="card-due ${overdue ? 'overdue' : ''}">
-    ${svgIcon('calendar')} Vence ${fmtDate(sale.dueDate)}${overdue ? ' · Atrasado!' : ''}
+  const lastPurchase = client.historicoCompras[0];
+  const extraCount   = client.historicoCompras.length - 1;
+
+  const productLine = lastPurchase
+    ? `🍫 <strong>Trufas</strong> · ${lastPurchase.quantidade} un × ${fmtCurrency(UNIT_PRICE)}`
+      + (extraCount > 0 ? ` <span style="font-size:.75rem;opacity:.65">· +${extraCount} compra${extraCount !== 1 ? 's' : ''}</span>` : '')
+    : '🍫 Trufas';
+
+  const dueRow = `<div class="card-due ${overdue ? 'overdue' : ''}">
+    ${svgIcon('calendar')} Cobrar em ${fmtDate(client.dataCobranca)}${overdue ? ' · Atrasado!' : ''}
   </div>`;
 
   let metaRow = '';
-  if (sale.lastChargedAt) {
-    metaRow += `<div class="card-dates-meta">📤 Cobrado em ${fmtDateTime(sale.lastChargedAt)}</div>`;
-  }
-  if (sale.paidAt) {
-    metaRow += `<div class="card-dates-meta">✅ Pago em ${fmtDateTime(sale.paidAt)}</div>`;
-  }
+  if (client.ultimaCobranca) metaRow += `<div class="card-dates-meta">📤 Cobrado em ${fmtDateTime(client.ultimaCobranca)}</div>`;
+  if (client.dataPagamento)  metaRow += `<div class="card-dates-meta">✅ Pago em ${fmtDateTime(client.dataPagamento)}</div>`;
 
-  const obsRow = sale.observation
-    ? `<div class="card-obs">💬 ${escHtml(sale.observation)}</div>`
+  const obsRow = client.observacao
+    ? `<div class="card-obs">💬 ${escHtml(client.observacao)}</div>`
     : '';
 
   const actionsHtml = `
-    <button class="btn btn-sm btn-whatsapp" onclick="openWhatsApp('${sale.id}')">
+    <button class="btn btn-sm btn-whatsapp" onclick="openWhatsApp('${client.id}')">
       ${svgWa()} Cobrar
     </button>
-    ${!isPago ? `<button class="btn btn-sm btn-success" onclick="confirmMarkPaid('${sale.id}')">✓ Pago</button>` : ''}
-    <button class="btn btn-sm btn-secondary" onclick="navigate('form', {editId:'${sale.id}'})">
+    ${!isPago ? `<button class="btn btn-sm btn-success" onclick="confirmMarkPaid('${client.id}')">✓ Pago</button>` : ''}
+    <button class="btn btn-sm btn-secondary" onclick="navigate('form', {editId:'${client.id}'})">
       ${svgEdit()} Editar
     </button>`;
 
   return `
-    <div class="sale-card ${sel ? 'selected' : ''} ${overdue ? 'overdue' : ''}" id="card-${sale.id}">
+    <div class="sale-card ${sel ? 'selected' : ''} ${overdue ? 'overdue' : ''}" id="card-${client.id}">
       <div class="card-top">
         <div class="card-checkbox">
-          <input type="checkbox" ${sel ? 'checked' : ''} onchange="toggleSelect('${sale.id}', this.checked)" aria-label="Selecionar ${escHtml(sale.clientName)}">
+          <input type="checkbox" ${sel ? 'checked' : ''} onchange="toggleSelect('${client.id}', this.checked)" aria-label="Selecionar ${escHtml(client.nome)}">
         </div>
         <div class="card-main">
           <div class="card-name-row">
-            <span class="client-name">${escHtml(sale.clientName)}</span>
+            <span class="client-name">${escHtml(client.nome)}</span>
             <span class="status-badge badge-${st}">${STATUS_ICON[st]} ${STATUS_LABEL[st]}</span>
           </div>
-          <div class="card-phone">${svgIcon('phone')} ${fmtPhone(sale.whatsapp)}</div>
+          <div class="card-phone">${svgIcon('phone')} ${fmtPhone(client.whatsapp)}</div>
         </div>
-        <button class="card-delete" onclick="confirmDelete('${sale.id}')" title="Excluir">
+        <button class="card-delete" onclick="confirmDelete('${client.id}')" title="Excluir">
           ${svgTrash()}
         </button>
       </div>
       <div class="card-body">
         <div class="card-product">
-          <div class="product-info">
-            🍫 <strong>Trufas</strong>
-            · ${sale.quantity} un × ${fmtCurrency(UNIT_PRICE)}
-          </div>
-          <div class="product-value">${fmtCurrency(sale.totalValue)}</div>
+          <div class="product-info">${productLine}</div>
+          <div class="product-value">${fmtCurrency(client.saldoPendente)}</div>
         </div>
         ${dueRow}
         ${obsRow}
@@ -483,24 +581,37 @@ function renderForm() {
   const form = document.getElementById('sale-form');
   if (!form) return;
 
-  const sale = state.editingId ? state.sales.find(s => s.id === state.editingId) : null;
+  const isEditing = !!state.editingId;
+  const client    = isEditing ? state.clients.find(c => c.id === state.editingId) : null;
 
-  if (sale) {
-    setVal('f-clientName',  sale.clientName);
-    setVal('f-whatsapp',    fmtPhone(sale.whatsapp));
-    setVal('f-quantity',    sale.quantity);
-    setVal('f-dueDate',     sale.dueDate);
-    setVal('f-observation', sale.observation || '');
+  // Campos exclusivos de nova compra ficam visíveis só no modo novo
+  const fgQty   = document.getElementById('fg-quantity');
+  const fgDate  = document.getElementById('fg-dueDate');
+  const qtyEl   = document.getElementById('f-quantity');
+  const dateEl  = document.getElementById('f-dueDate');
+  if (fgQty)  fgQty.classList.toggle('hidden', isEditing);
+  if (fgDate) fgDate.classList.toggle('hidden', isEditing);
+  if (qtyEl)  qtyEl.required  = !isEditing;
+  if (dateEl) dateEl.required = !isEditing;
+
+  const totalLabelEl = document.getElementById('f-total-label');
+
+  if (client) {
+    setVal('f-clientName',  client.nome);
+    setVal('f-whatsapp',    fmtPhone(client.whatsapp));
+    setVal('f-observation', client.observacao || '');
+    setEl('f-total-display', fmtCurrency(client.saldoPendente));
+    if (totalLabelEl) totalLabelEl.textContent = '💰 Saldo Pendente';
   } else {
     form.reset();
     setVal('f-dueDate',  todayISO());
     setVal('f-quantity', '1');
+    if (totalLabelEl) totalLabelEl.textContent = '💰 Valor Total da Venda';
+    calcTotal();
   }
 
-  calcTotal();
-
-  const title = document.getElementById('form-submit-btn');
-  if (title) title.textContent = state.editingId ? 'Salvar Alterações' : 'Registrar Venda';
+  const submitBtn = document.getElementById('form-submit-btn');
+  if (submitBtn) submitBtn.textContent = isEditing ? 'Salvar Alterações' : 'Registrar Venda';
 }
 
 function calcTotal() {
@@ -513,9 +624,9 @@ function calcTotal() {
 ═══════════════════════════════════════ */
 function renderConfig() {
   const stats = getStats();
-  setEl('cfg-total',    stats.total);
-  setEl('cfg-ativos',   stats.qtdAtivos);
-  setEl('cfg-pagos',    stats.qtdPagos);
+  setEl('cfg-total',  stats.total);
+  setEl('cfg-ativos', stats.qtdAtivos);
+  setEl('cfg-pagos',  stats.qtdPagos);
 }
 
 /* ═══════════════════════════════════════
@@ -532,14 +643,14 @@ function toggleSelect(id, checked) {
 }
 
 function selectAll() {
-  getFiltered().forEach(s => state.selectedIds.add(s.id));
+  getFiltered().forEach(c => state.selectedIds.add(c.id));
   renderLista();
 }
 
 function selectAtrasados() {
   state.selectedIds.clear();
-  state.sales.filter(s => getStatus(s) === STATUS.ATRASADO)
-             .forEach(s => state.selectedIds.add(s.id));
+  state.clients.filter(c => getStatus(c) === STATUS.ATRASADO)
+               .forEach(c => state.selectedIds.add(c.id));
   renderLista();
 }
 
@@ -558,14 +669,14 @@ function setFilter(f) {
    OPEN WHATSAPP (individual)
 ═══════════════════════════════════════ */
 function openWhatsApp(id) {
-  const sale = state.sales.find(s => s.id === id);
-  if (!sale) return;
+  const client = state.clients.find(c => c.id === id);
+  if (!client) return;
 
-  const msg  = buildMessage(sale);
-  const link = buildWaLink(sale.whatsapp, msg);
+  const msg  = buildMessage(client);
+  const link = buildWaLink(client.whatsapp, msg);
   window.open(link, '_blank');
 
-  setSaleStatus(id, STATUS.COBRADO);
+  setClientStatus(id, STATUS.COBRADO);
   if (state.currentPage === 'lista')     renderLista();
   if (state.currentPage === 'dashboard') renderDashboard();
   showToast('WhatsApp aberto! Envie a mensagem e aguarde o cliente responder.', 'info');
@@ -576,8 +687,8 @@ function openWhatsApp(id) {
 ═══════════════════════════════════════ */
 function startQueue(ids) {
   const items = ids
-    .map(id => state.sales.find(s => s.id === id))
-    .filter(s => s && getStatus(s) !== STATUS.PAGO);
+    .map(id => state.clients.find(c => c.id === id))
+    .filter(c => c && getStatus(c) !== STATUS.PAGO);
 
   if (items.length === 0) {
     showToast('Nenhuma cobrança elegível selecionada', 'warning');
@@ -591,15 +702,15 @@ function startQueue(ids) {
 }
 
 function cobrarAtrasados() {
-  const ids = state.sales
-    .filter(s => getStatus(s) === STATUS.ATRASADO)
-    .map(s => s.id);
+  const ids = state.clients
+    .filter(c => getStatus(c) === STATUS.ATRASADO)
+    .map(c => c.id);
   startQueue(ids);
 }
 
 function cobrarSelecionados() {
   if (state.selectedIds.size === 0) {
-    showToast('Selecione ao menos uma cobrança', 'warning');
+    showToast('Selecione ao menos um cliente', 'warning');
     return;
   }
   startQueue(Array.from(state.selectedIds));
@@ -607,13 +718,14 @@ function cobrarSelecionados() {
 
 function renderQueue() {
   const { items, index } = state.queue;
-  const sale   = items[index];
+  const client = items[index];
   const total  = items.length;
   const isLast = index === total - 1;
   const pct    = Math.round(((index + 1) / total) * 100);
+  const last   = client.historicoCompras[0];
 
-  const msg  = buildMessage(sale);
-  const link = buildWaLink(sale.whatsapp, msg);
+  const msg  = buildMessage(client);
+  const link = buildWaLink(client.whatsapp, msg);
 
   const modal = document.getElementById('modal-queue');
   modal.innerHTML = `
@@ -633,24 +745,24 @@ function renderQueue() {
 
       <div class="queue-client-card">
         <div class="queue-avatar-row">
-          <div class="queue-avatar">${escHtml(initials(sale.clientName))}</div>
+          <div class="queue-avatar">${escHtml(initials(client.nome))}</div>
           <div>
-            <div class="queue-client-name">${escHtml(sale.clientName)}</div>
-            <div class="queue-client-phone">📱 ${fmtPhone(sale.whatsapp)}</div>
+            <div class="queue-client-name">${escHtml(client.nome)}</div>
+            <div class="queue-client-phone">📱 ${fmtPhone(client.whatsapp)}</div>
           </div>
         </div>
         <div class="queue-details-grid">
           <div class="queue-detail-item">
-            <div class="queue-detail-label">Valor devido</div>
-            <div class="queue-detail-value value-big">${fmtCurrency(sale.totalValue)}</div>
+            <div class="queue-detail-label">Saldo devedor</div>
+            <div class="queue-detail-value value-big">${fmtCurrency(client.saldoPendente)}</div>
           </div>
           <div class="queue-detail-item">
-            <div class="queue-detail-label">Vencimento</div>
-            <div class="queue-detail-value">${fmtDate(sale.dueDate)}</div>
+            <div class="queue-detail-label">Cobrar em</div>
+            <div class="queue-detail-value">${fmtDate(client.dataCobranca)}</div>
           </div>
           <div class="queue-detail-item" style="grid-column:1/-1">
-            <div class="queue-detail-label">Produto</div>
-            <div class="queue-detail-value">🍫 Trufas × ${sale.quantity}</div>
+            <div class="queue-detail-label">Última compra</div>
+            <div class="queue-detail-value">🍫 Trufas × ${last ? last.quantidade : '—'} · ${client.historicoCompras.length} compra${client.historicoCompras.length !== 1 ? 's' : ''} no total</div>
           </div>
         </div>
       </div>
@@ -681,7 +793,7 @@ function renderQueue() {
 
 function queueMarkCharged() {
   const { items, index } = state.queue;
-  setSaleStatus(items[index].id, STATUS.COBRADO);
+  setClientStatus(items[index].id, STATUS.COBRADO);
 
   if (index < items.length - 1) {
     state.queue.index++;
@@ -726,6 +838,7 @@ function queueClose() {
 function handleFormSubmit(e) {
   e.preventDefault();
 
+  const isEditing = !!state.editingId;
   const data = {
     clientName:  getVal('f-clientName'),
     whatsapp:    getVal('f-whatsapp'),
@@ -734,35 +847,49 @@ function handleFormSubmit(e) {
     observation: getVal('f-observation')
   };
 
-  if (!data.clientName || !data.whatsapp || !data.quantity || !data.dueDate) {
+  if (!data.clientName || !data.whatsapp) {
+    showToast('Preencha nome e WhatsApp', 'warning');
+    return;
+  }
+
+  if (!isEditing && (!data.quantity || !data.dueDate)) {
     showToast('Preencha todos os campos obrigatórios', 'warning');
     return;
   }
 
-  if (state.editingId) {
-    updateSale(state.editingId, data);
-    showToast('Venda atualizada com sucesso!', 'success');
+  if (isEditing) {
+    const ok = updateClient(state.editingId, data);
+    if (ok !== false) {
+      showToast('Cliente atualizado!', 'success');
+      state.selectedIds.clear();
+      navigate('lista');
+    }
   } else {
-    createSale(data);
-    showToast('Venda registrada com sucesso!', 'success');
+    const wa          = cleanWhatsApp(data.whatsapp);
+    const preExisting = findClientByWhatsApp(wa);
+    registerPurchase(data);
+    if (preExisting) {
+      showToast(`Venda adicionada ao saldo de ${preExisting.nome}!`, 'success');
+    } else {
+      showToast('Venda registrada com sucesso!', 'success');
+    }
+    state.selectedIds.clear();
+    navigate('lista');
   }
-
-  state.selectedIds.clear();
-  navigate('lista');
 }
 
 /* ═══════════════════════════════════════
    CONFIRM DIALOG
 ═══════════════════════════════════════ */
-let _confirmCb = null;
+let _confirmCb   = null;
 let _confirmIcon = '⚠️';
 
 function showConfirm(title, message, onYes, icon = '⚠️') {
   _confirmCb   = onYes;
   _confirmIcon = icon;
   setEl('confirm-icon-inner', icon);
-  setEl('confirm-title',   title);
-  setEl('confirm-message', message);
+  setEl('confirm-title',      title);
+  setEl('confirm-message',    message);
   document.getElementById('modal-confirm').classList.remove('hidden');
   document.body.style.overflow = 'hidden';
 }
@@ -780,28 +907,28 @@ function confirmNo() {
 }
 
 function confirmDelete(id) {
-  const s = state.sales.find(x => x.id === id);
-  if (!s) return;
+  const c = state.clients.find(x => x.id === id);
+  if (!c) return;
   showConfirm(
-    'Excluir cobrança',
-    `Deseja excluir a cobrança de "${s.clientName}" no valor de ${fmtCurrency(s.totalValue)}? Esta ação não pode ser desfeita.`,
+    'Excluir cliente',
+    `Deseja excluir "${c.nome}" com saldo de ${fmtCurrency(c.saldoPendente)}? Todas as compras serão removidas. Esta ação não pode ser desfeita.`,
     () => {
-      deleteSale(id);
+      deleteClient(id);
       if (state.currentPage === 'lista')     renderLista();
       if (state.currentPage === 'dashboard') renderDashboard();
-      showToast('Cobrança excluída', 'success');
+      showToast('Cliente excluído', 'success');
     }
   );
 }
 
 function confirmMarkPaid(id) {
-  const s = state.sales.find(x => x.id === id);
-  if (!s) return;
+  const c = state.clients.find(x => x.id === id);
+  if (!c) return;
   showConfirm(
     'Confirmar pagamento',
-    `Confirmar recebimento de ${fmtCurrency(s.totalValue)} de ${s.clientName}?`,
+    `Confirmar recebimento de ${fmtCurrency(c.saldoPendente)} de ${c.nome}? O saldo será zerado.`,
     () => {
-      setSaleStatus(id, STATUS.PAGO);
+      setClientStatus(id, STATUS.PAGO);
       if (state.currentPage === 'lista')     renderLista();
       if (state.currentPage === 'dashboard') renderDashboard();
       showToast('Marcado como pago! 🎉', 'success');
@@ -811,12 +938,12 @@ function confirmMarkPaid(id) {
 }
 
 function confirmClearAll() {
-  if (state.sales.length === 0) { showToast('Nenhum dado para limpar', 'info'); return; }
+  if (state.clients.length === 0) { showToast('Nenhum dado para limpar', 'info'); return; }
   showConfirm(
     'Limpar todos os dados',
-    `Isso irá excluir TODOS os ${state.sales.length} registros permanentemente. Esta ação não pode ser desfeita.`,
+    `Isso irá excluir TODOS os ${state.clients.length} clientes permanentemente. Esta ação não pode ser desfeita.`,
     () => {
-      state.sales = [];
+      state.clients = [];
       state.selectedIds.clear();
       saveData();
       renderConfig();
@@ -830,7 +957,7 @@ function confirmClearAll() {
 ═══════════════════════════════════════ */
 function showToast(message, type = 'info') {
   const container = document.getElementById('toast-container');
-  const toast = document.createElement('div');
+  const toast     = document.createElement('div');
   toast.className = `toast toast-${type}`;
 
   const icons = { success: '✅', error: '❌', warning: '⚠️', info: 'ℹ️' };
@@ -848,13 +975,13 @@ function showToast(message, type = 'info') {
    BACKUP & RESTORE
 ═══════════════════════════════════════ */
 function exportData() {
-  if (state.sales.length === 0) { showToast('Nenhum dado para exportar', 'warning'); return; }
+  if (state.clients.length === 0) { showToast('Nenhum dado para exportar', 'warning'); return; }
 
   const payload = {
     app:        'TrufasPAY',
     version:    APP_VERSION,
     exportedAt: new Date().toISOString(),
-    sales:      state.sales
+    clients:    state.clients
   };
 
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -864,7 +991,7 @@ function exportData() {
   a.download = `trufaspay-backup-${todayISO()}.json`;
   a.click();
   URL.revokeObjectURL(url);
-  showToast(`${state.sales.length} registros exportados!`, 'success');
+  showToast(`${state.clients.length} clientes exportados!`, 'success');
 }
 
 function triggerImport() {
@@ -880,17 +1007,17 @@ function handleImport(e) {
   reader.onload = ev => {
     try {
       const data = JSON.parse(ev.target.result);
-      if (!Array.isArray(data.sales)) throw new Error('invalid');
+      if (!Array.isArray(data.clients)) throw new Error('invalid');
 
       showConfirm(
         'Importar backup',
-        `Isso irá substituir os ${state.sales.length} registros atuais por ${data.sales.length} registros do arquivo. Deseja continuar?`,
+        `Isso irá substituir os ${state.clients.length} clientes atuais por ${data.clients.length} do arquivo. Deseja continuar?`,
         () => {
-          state.sales = data.sales;
+          state.clients = data.clients;
           state.selectedIds.clear();
           saveData();
           renderConfig();
-          showToast(`${data.sales.length} registros importados!`, 'success');
+          showToast(`${data.clients.length} clientes importados!`, 'success');
         }
       );
     } catch (_) {
@@ -929,18 +1056,6 @@ function svgEdit() {
 function svgTrash() {
   return `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`;
 }
-function svgHome() {
-  return `<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>`;
-}
-function svgList() {
-  return `<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>`;
-}
-function svgSettings() {
-  return `<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>`;
-}
-function svgBack() {
-  return `<svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>`;
-}
 function svgIcon(name) {
   const icons = {
     calendar: `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM7 10h5v5H7z"/></svg>`,
@@ -969,15 +1084,12 @@ function getVal(id) {
    EVENT LISTENERS SETUP
 ═══════════════════════════════════════ */
 function setupListeners() {
-  // Form submit
   const form = document.getElementById('sale-form');
   if (form) form.addEventListener('submit', handleFormSubmit);
 
-  // Auto-calc total (preço fixo R$ 3,33 — só depende da quantidade)
   const qtyEl = document.getElementById('f-quantity');
   if (qtyEl) qtyEl.addEventListener('input', calcTotal);
 
-  // WhatsApp phone mask
   const waInput = document.getElementById('f-whatsapp');
   if (waInput) {
     waInput.addEventListener('input', function () {
@@ -995,17 +1107,12 @@ function setupListeners() {
     });
   }
 
-  // Import file
   const importInput = document.getElementById('import-file');
   if (importInput) importInput.addEventListener('change', handleImport);
 
-  // Confirm dialog
-  document.getElementById('btn-confirm-yes')
-    ?.addEventListener('click', confirmYes);
-  document.getElementById('btn-confirm-no')
-    ?.addEventListener('click', confirmNo);
+  document.getElementById('btn-confirm-yes')?.addEventListener('click', confirmYes);
+  document.getElementById('btn-confirm-no')?.addEventListener('click',  confirmNo);
 
-  // PWA install
   window.addEventListener('beforeinstallprompt', e => {
     e.preventDefault();
     state.installPrompt = e;
@@ -1019,7 +1126,6 @@ function setupListeners() {
     state.installPrompt = null;
   });
 
-  // Handle ?page= query param
   const urlParams = new URLSearchParams(window.location.search);
   const initPage  = urlParams.get('page');
   if (initPage && ['dashboard','lista','form'].includes(initPage)) {
@@ -1034,9 +1140,7 @@ function registerSW() {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js')
       .then(reg => {
-        reg.addEventListener('updatefound', () => {
-          showToast('Atualizando o app…', 'info');
-        });
+        reg.addEventListener('updatefound', () => showToast('Atualizando o app…', 'info'));
       })
       .catch(() => {});
   }
