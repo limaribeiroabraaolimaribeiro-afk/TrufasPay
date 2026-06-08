@@ -33,14 +33,15 @@ const STATUS_ICON = {
    APPLICATION STATE
 ═══════════════════════════════════════ */
 const state = {
-  clients:     [],
-  currentPage: 'dashboard',
-  prevPage:    null,
-  filter:      'all',
-  selectedIds: new Set(),
-  editingId:   null,
-  queue:       null,
-  installPrompt: null
+  clients:            [],
+  currentPage:        'dashboard',
+  prevPage:           null,
+  filter:             'all',
+  selectedIds:        new Set(),
+  editingId:          null,
+  novaCompraClientId: null,
+  queue:              null,
+  installPrompt:      null
 };
 
 /* ═══════════════════════════════════════
@@ -275,6 +276,7 @@ function registerPurchase(data) {
     existing.status        = STATUS.PENDENTE;
     existing.dataCobranca  = data.dueDate;
     existing.ultimaCompra  = now;
+    existing.dataPagamento = null;   // nova dívida: limpa data de pagamento anterior
     if (obs) existing.observacao = obs;
     existing.historicoCompras.unshift(purchase);
     // Move para o topo da lista
@@ -589,6 +591,9 @@ function buildSaleCard(client) {
     ${!isPago ? `<button class="btn btn-sm btn-success" onclick="confirmMarkPaid('${client.id}')">✓ Pago</button>` : ''}
     <button class="btn btn-sm btn-secondary" onclick="navigate('form', {editId:'${client.id}'})">
       ${svgEdit()} Editar
+    </button>
+    <button class="btn btn-sm btn-outline" onclick="openNovaCompraModal('${client.id}')">
+      ${svgPlus()} Nova compra
     </button>`;
 
   return `
@@ -881,6 +886,129 @@ function queueClose() {
 
   if (state.currentPage === 'lista')     renderLista();
   if (state.currentPage === 'dashboard') renderDashboard();
+}
+
+/* ═══════════════════════════════════════
+   NOVA COMPRA MODAL
+═══════════════════════════════════════ */
+function openNovaCompraModal(clientId) {
+  state.novaCompraClientId = clientId;
+  renderNovaCompraModal();
+  document.getElementById('modal-nova-compra').classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeNovaCompraModal() {
+  state.novaCompraClientId = null;
+  document.getElementById('modal-nova-compra').classList.add('hidden');
+  document.body.style.overflow = '';
+  if (state.currentPage === 'lista')     renderLista();
+  if (state.currentPage === 'dashboard') renderDashboard();
+}
+
+function calcNovaCompraTotal() {
+  const qty = parseFloat(document.getElementById('nc-qty')?.value) || 0;
+  const el  = document.getElementById('nc-total');
+  if (el) el.textContent = fmtCurrency(qty * UNIT_PRICE);
+}
+
+function submitNovaCompra() {
+  const client = state.clients.find(c => c.id === state.novaCompraClientId);
+  if (!client) return;
+
+  const qty     = parseFloat(document.getElementById('nc-qty')?.value)  || 0;
+  const dueDate = (document.getElementById('nc-date')?.value || '').trim();
+  const obs     = (document.getElementById('nc-obs')?.value  || '').trim();
+
+  if (qty < 1)  { showToast('Informe a quantidade de trufas', 'warning'); return; }
+  if (!dueDate) { showToast('Informe a data de cobrança', 'warning');     return; }
+
+  const totalStr = fmtCurrency(qty * UNIT_PRICE);
+
+  registerPurchase({
+    clientName:  client.nome,
+    whatsapp:    client.whatsapp,
+    quantity:    qty,
+    dueDate,
+    observation: obs
+  });
+
+  closeNovaCompraModal();
+  showToast(`Nova compra de ${totalStr} lançada para ${client.nome}!`, 'success');
+}
+
+function renderNovaCompraModal() {
+  const client = state.clients.find(c => c.id === state.novaCompraClientId);
+  if (!client) return;
+
+  const hasPendingBalance = client.saldoPendente > 0;
+
+  document.getElementById('modal-nova-compra').innerHTML = `
+    <div class="modal-sheet">
+      <div class="queue-handle"></div>
+
+      <div class="queue-header-row">
+        <span class="queue-title">${svgPlus()} Nova Compra</span>
+      </div>
+
+      <div class="queue-client-card">
+        <div class="queue-avatar-row">
+          <div class="queue-avatar">${escHtml(initials(client.nome))}</div>
+          <div>
+            <div class="queue-client-name">${escHtml(client.nome)}</div>
+            <div class="queue-client-phone">📱 ${fmtPhone(client.whatsapp)}</div>
+          </div>
+        </div>
+        ${hasPendingBalance ? `
+          <div class="queue-details-grid" style="margin-top:10px">
+            <div class="queue-detail-item">
+              <div class="queue-detail-label">Saldo em aberto atual</div>
+              <div class="queue-detail-value">${fmtCurrency(client.saldoPendente)}</div>
+            </div>
+          </div>` : ''}
+      </div>
+
+      <div style="padding:0 20px 4px">
+
+        <div class="form-group">
+          <label class="form-label" for="nc-qty">
+            Quantidade de trufas <span class="required">*</span>
+          </label>
+          <input id="nc-qty" type="number" class="form-control"
+                 min="1" step="1" value="1" required oninput="calcNovaCompraTotal()">
+          <div class="form-hint">Valor por trufa: R$ 3,33 (fixo)</div>
+        </div>
+
+        <div class="total-display" style="margin:0 0 16px">
+          <div class="total-label">💰 Valor desta compra</div>
+          <div class="total-value" id="nc-total">${fmtCurrency(UNIT_PRICE)}</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="nc-date">
+            Data de cobrança <span class="required">*</span>
+          </label>
+          <input id="nc-date" type="date" class="form-control" value="${todayISO()}" required>
+          <div class="form-hint">Quando cobrar o novo valor.</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="nc-obs">Observação</label>
+          <textarea id="nc-obs" class="form-control form-control-textarea"
+                    placeholder="Ex: entregue na porta, sabor especial..."></textarea>
+        </div>
+
+      </div>
+
+      <div class="queue-actions-wrap">
+        <button type="button" class="btn btn-primary btn-lg" onclick="submitNovaCompra()">
+          ${svgPlus()} Registrar nova compra
+        </button>
+        <button type="button" class="btn btn-secondary" onclick="closeNovaCompraModal()">
+          Cancelar
+        </button>
+      </div>
+    </div>`;
 }
 
 /* ═══════════════════════════════════════
