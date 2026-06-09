@@ -1096,6 +1096,42 @@ img, svg { display: block; }
 .install-banner-text strong { display: block; font-size: 14px; }
 
 /* =============================================
+   IOS INSTALL BANNER
+   ============================================= */
+.ios-install-banner {
+  position: fixed;
+  bottom: var(--nav-h);
+  left: 0;
+  right: 0;
+  background: linear-gradient(135deg, var(--primary-darker) 0%, var(--primary-dark) 100%);
+  color: #fff;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 9998;
+  box-shadow: 0 -3px 16px rgba(0,0,0,0.22);
+}
+.ios-install-banner.hidden { display: none !important; }
+.ios-install-text {
+  flex: 1;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.ios-install-close {
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.18);
+  border: 1.5px solid rgba(255,255,255,0.4);
+  color: #fff;
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* =============================================
    HELPERS
    ============================================= */
 .hidden { display: none !important; }

@@ -244,6 +244,17 @@
     <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
   </button>
 
+  <!-- iOS Install Banner (fixed, above bottom nav) -->
+  <div id="ios-install-banner" class="ios-install-banner hidden" role="alert">
+    <span style="font-size:22px;flex-shrink:0">📲</span>
+    <p class="ios-install-text">
+      Para instalar no iPhone: toque no <strong>botão Compartilhar</strong>
+      (<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:middle"><path d="M16 5l-1.42 1.42-1.59-1.59V16h-1.98V4.83L9.42 6.42 8 5l4-4 4 4zm4 5v11c0 1.1-.9 2-2 2H6a2 2 0 01-2-2V10c0-1.11.89-2 2-2h3v2H6v11h12V10h-3V8h3a2 2 0 012 2z"/></svg>)
+      do Safari e escolha <strong>"Adicionar à Tela de Início"</strong>.
+    </p>
+    <button class="ios-install-close" onclick="dismissIosInstallBanner()">Entendi</button>
+  </div>
+
 </div><!-- /app -->
 
 

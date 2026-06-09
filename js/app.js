@@ -1203,6 +1203,25 @@ function handleImport(e) {
 }
 
 /* ═══════════════════════════════════════
+   IOS INSTALL BANNER
+═══════════════════════════════════════ */
+function initIosInstallBanner() {
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isStandalone = window.navigator.standalone === true ||
+                       window.matchMedia('(display-mode: standalone)').matches;
+  if (!isIOS || isStandalone) return;
+  if (localStorage.getItem('ios-install-dismissed') === '1') return;
+  const banner = document.getElementById('ios-install-banner');
+  if (banner) banner.classList.remove('hidden');
+}
+
+function dismissIosInstallBanner() {
+  localStorage.setItem('ios-install-dismissed', '1');
+  const banner = document.getElementById('ios-install-banner');
+  if (banner) banner.classList.add('hidden');
+}
+
+/* ═══════════════════════════════════════
    PWA INSTALL PROMPT
 ═══════════════════════════════════════ */
 function installApp() {
@@ -1300,6 +1319,8 @@ function setupListeners() {
     if (banner) banner.classList.add('hidden');
     state.installPrompt = null;
   });
+
+  initIosInstallBanner();
 
   const urlParams = new URLSearchParams(window.location.search);
   const initPage  = urlParams.get('page');
