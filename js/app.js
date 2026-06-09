@@ -586,15 +586,11 @@ function buildSaleCard(client) {
     ? `<div class="card-obs">💬 ${escHtml(client.observacao)}</div>`
     : '';
 
-  const actionsHtml = `
-    ${!isPago ? `<button class="btn btn-sm btn-whatsapp" onclick="openWhatsApp('${client.id}')">${svgWa()} Cobrar</button>` : ''}
-    ${!isPago ? `<button class="btn btn-sm btn-success" onclick="confirmMarkPaid('${client.id}')">✓ Pago</button>` : ''}
-    <button class="btn btn-sm btn-secondary" onclick="navigate('form', {editId:'${client.id}'})">
-      ${svgEdit()} Editar
-    </button>
-    <button class="btn btn-sm btn-outline" onclick="openNovaCompraModal('${client.id}')">
-      ${svgPlus()} Nova compra
-    </button>`;
+  const btnCobrar    = isPago ? '' : `<button class="btn btn-sm btn-whatsapp" onclick="openWhatsApp('${client.id}')">${svgWa()} Cobrar</button>`;
+  const btnPago      = isPago ? '' : `<button class="btn btn-sm btn-success" onclick="confirmMarkPaid('${client.id}')">✓ Pago</button>`;
+  const btnEditar    = `<button class="btn btn-sm btn-secondary" onclick="navigate('form',{editId:'${client.id}'})">${svgEdit()} Editar</button>`;
+  const btnNovaComp  = `<button class="btn btn-sm btn-outline" onclick="openNovaCompraModal('${client.id}')">${svgPlus()} Nova compra</button>`;
+  const actionsHtml  = btnCobrar + btnPago + btnEditar + btnNovaComp;
 
   return `
     <div class="sale-card ${sel ? 'selected' : ''} ${overdue ? 'overdue' : ''}" id="card-${client.id}">
