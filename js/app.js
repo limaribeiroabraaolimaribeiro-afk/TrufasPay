@@ -9,7 +9,7 @@
 /* ═══════════════════════════════════════
    CONSTANTS
 ═══════════════════════════════════════ */
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.2.0';
 const STORAGE_KEY = 'trufaspay_v2';
 const SETTINGS_KEY = 'trufaspay_settings';
 const UNIT_PRICE  = 3.33;
@@ -482,6 +482,22 @@ function updateHeader(page) {
 }
 
 /* ═══════════════════════════════════════
+   EMPTY STATE — SEM DADOS NESTE APARELHO
+═══════════════════════════════════════ */
+function emptyDataCardHtml() {
+  return `
+    <div class="empty-state">
+      <div class="empty-icon">📂</div>
+      <div class="empty-title">Nenhum dado encontrado neste aparelho</div>
+      <div class="empty-text">Se você já usava o TrufasPay em outro navegador, importe um backup para trazer seus clientes e cobranças.</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:center; margin-top:8px">
+        <button class="btn btn-primary" onclick="triggerImport()">📂 Importar backup</button>
+        <button class="btn btn-secondary" onclick="navigate('form')">${svgPlus()} Começar do zero</button>
+      </div>
+    </div>`;
+}
+
+/* ═══════════════════════════════════════
    RENDER — DASHBOARD
 ═══════════════════════════════════════ */
 function renderDashboard() {
@@ -508,15 +524,7 @@ function renderRecentSales() {
 
   const recent = state.clients.slice(0, 5);
   if (recent.length === 0) {
-    container.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-icon">🍫</div>
-        <div class="empty-title">Nenhuma venda ainda</div>
-        <div class="empty-text">Comece registrando sua primeira venda fiada.</div>
-        <button class="btn btn-primary" onclick="navigate('form')">
-          ${svgPlus()} Nova Venda
-        </button>
-      </div>`;
+    container.innerHTML = emptyDataCardHtml();
     return;
   }
 
@@ -582,6 +590,10 @@ function renderSaleCards() {
 
   const filtered = getFiltered();
   if (filtered.length === 0) {
+    if (state.filter === 'all' && state.clients.length === 0) {
+      container.innerHTML = emptyDataCardHtml();
+      return;
+    }
     const filterName = state.filter === 'all' ? '' : STATUS_LABEL[state.filter];
     container.innerHTML = `
       <div class="empty-state">
@@ -1217,14 +1229,28 @@ function showToast(message, type = 'info') {
 /* ═══════════════════════════════════════
    BACKUP & RESTORE
 ═══════════════════════════════════════ */
+function openBackupModal() {
+  document.getElementById('modal-backup').classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeBackupModal() {
+  document.getElementById('modal-backup').classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
 function exportData() {
-  if (state.clients.length === 0) { showToast('Nenhum dado para exportar', 'warning'); return; }
+  const rawClients  = localStorage.getItem(STORAGE_KEY);
+  const rawSettings = localStorage.getItem(SETTINGS_KEY);
 
   const payload = {
-    app:        'TrufasPAY',
+    app:        'TrufasPay',
     version:    APP_VERSION,
     exportedAt: new Date().toISOString(),
-    clients:    state.clients
+    data: {
+      [STORAGE_KEY]:  rawClients  ? JSON.parse(rawClients)  : null,
+      [SETTINGS_KEY]: rawSettings ? JSON.parse(rawSettings) : null
+    }
   };
 
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -1234,7 +1260,7 @@ function exportData() {
   a.download = `trufaspay-backup-${todayISO()}.json`;
   a.click();
   URL.revokeObjectURL(url);
-  showToast(`${state.clients.length} clientes exportados!`, 'success');
+  showToast('Backup exportado!', 'success');
 }
 
 function triggerImport() {
@@ -1248,23 +1274,42 @@ function handleImport(e) {
 
   const reader = new FileReader();
   reader.onload = ev => {
+    let parsed;
     try {
-      const data = JSON.parse(ev.target.result);
-      if (!Array.isArray(data.clients)) throw new Error('invalid');
-
-      showConfirm(
-        'Importar backup',
-        `Isso irá substituir os ${state.clients.length} clientes atuais por ${data.clients.length} do arquivo. Deseja continuar?`,
-        () => {
-          state.clients = data.clients;
-          state.selectedIds.clear();
-          saveData();
-          renderConfig();
-          showToast(`${data.clients.length} clientes importados!`, 'success');
-        }
-      );
+      parsed = JSON.parse(ev.target.result);
     } catch (_) {
       showToast('Arquivo inválido ou corrompido', 'error');
+      return;
+    }
+
+    const data = parsed && parsed.data;
+    if (!parsed || parsed.app !== 'TrufasPay' || !data || !data[STORAGE_KEY]) {
+      showToast('Arquivo inválido ou corrompido', 'error');
+      return;
+    }
+
+    const doImport = () => {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data[STORAGE_KEY]));
+      if (data[SETTINGS_KEY]) {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(data[SETTINGS_KEY]));
+      }
+
+      loadData();
+      state.selectedIds.clear();
+      closeBackupModal();
+      renderDashboard();
+      renderLista();
+      showToast('Backup importado com sucesso.', 'success');
+    };
+
+    if (state.clients.length > 0) {
+      showConfirm(
+        'Importar backup',
+        'Importar este backup vai substituir os dados atuais deste aparelho. Deseja continuar?',
+        doImport
+      );
+    } else {
+      doImport();
     }
   };
   reader.readAsText(file);

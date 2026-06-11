@@ -127,6 +127,7 @@
         <button class="btn btn-sm btn-secondary" onclick="selectAtrasados()">⚠️ Atrasados</button>
         <button class="btn btn-sm btn-ghost" onclick="clearSelection()">✕ Limpar</button>
         <button class="btn btn-sm btn-ghost" onclick="openSettingsModal()">⚙️ Mensagem/Pix</button>
+        <button class="btn btn-sm btn-ghost" onclick="openBackupModal()">💾 Backup</button>
       </div>
 
       <!-- Bulk Actions Bar -->
@@ -306,6 +307,36 @@
       </button>
     </div>
   </div>
+</div>
+
+<!-- Backup Modal (Exportar/Importar dados) -->
+<div id="modal-backup" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-label="Backup de dados">
+  <div class="modal-sheet">
+    <div class="queue-handle"></div>
+
+    <div class="queue-header-row">
+      <span class="queue-title">💾 Backup</span>
+    </div>
+
+    <div style="padding:0 20px 4px">
+      <p style="font-size:.85rem; opacity:.75; margin:0 0 16px">
+        Use isso para transferir os dados para outro celular ou para o app instalado.
+      </p>
+    </div>
+
+    <div class="queue-actions-wrap">
+      <button type="button" class="btn btn-primary btn-lg" onclick="exportData()">
+        ⬇️ Exportar dados
+      </button>
+      <button type="button" class="btn btn-secondary btn-lg" onclick="triggerImport()">
+        ⬆️ Importar dados
+      </button>
+      <button type="button" class="btn btn-secondary" onclick="closeBackupModal()">
+        Fechar
+      </button>
+    </div>
+  </div>
+  <input type="file" id="import-file" accept="application/json,.json" hidden>
 </div>
 
 <!-- Confirm Dialog -->
