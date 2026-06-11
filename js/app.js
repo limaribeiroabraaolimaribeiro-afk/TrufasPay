@@ -11,7 +11,13 @@
 ═══════════════════════════════════════ */
 const APP_VERSION = '2.0.0';
 const STORAGE_KEY = 'trufaspay_v2';
+const SETTINGS_KEY = 'trufaspay_settings';
 const UNIT_PRICE  = 3.33;
+
+const DEFAULT_SETTINGS = {
+  pixKey: '09286862997',
+  messageTemplate: 'Oi, {nome}! Tudo bem?\n\nPassando para lembrar que ficou pendente o valor de R$ {valor} referente às trufas.\n\nChave Pix para pagamento: {pix}\n\nQuando pagar, me avisa por aqui para eu dar baixa no sistema.'
+};
 
 const STATUS = { PENDENTE: 'pendente', ATRASADO: 'atrasado', COBRADO: 'cobrado', PAGO: 'pago' };
 
@@ -162,6 +168,31 @@ function saveData() {
 }
 
 /* ═══════════════════════════════════════
+   SETTINGS (PIX KEY / MENSAGEM DE COBRANÇA)
+═══════════════════════════════════════ */
+function getSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        pixKey:          parsed.pixKey || DEFAULT_SETTINGS.pixKey,
+        messageTemplate: parsed.messageTemplate || DEFAULT_SETTINGS.messageTemplate
+      };
+    }
+  } catch (_) { /* usa padrão */ }
+  return { ...DEFAULT_SETTINGS };
+}
+
+function saveSettings(settings) {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  } catch (_) {
+    showToast('Erro ao salvar ajustes', 'error');
+  }
+}
+
+/* ═══════════════════════════════════════
    UTILITIES
 ═══════════════════════════════════════ */
 function uid() {
@@ -239,7 +270,16 @@ function getStatus(client) {
    WHATSAPP MESSAGE
 ═══════════════════════════════════════ */
 function buildMessage(client) {
-  return `Oi, ${client.nome}! Tudo bem?\n\nPassando para lembrar que ficou pendente o valor de ${fmtCurrency(client.saldoPendente)} referente às trufas.\n\nQuando pagar, me avisa por aqui para eu dar baixa no sistema. 😊`;
+  const settings    = getSettings();
+  const valor       = fmtCurrency(client.saldoPendente).replace(/^R\$\s*/, '');
+  const lastPurchase = (client.historicoCompras || [])[0];
+  const quantidade  = lastPurchase ? String(lastPurchase.quantidade) : '';
+
+  return settings.messageTemplate
+    .replaceAll('{nome}', client.nome)
+    .replaceAll('{valor}', valor)
+    .replaceAll('{pix}', settings.pixKey)
+    .replaceAll('{quantidade}', quantidade);
 }
 
 /* ═══════════════════════════════════════
@@ -882,6 +922,34 @@ function queueClose() {
 
   if (state.currentPage === 'lista')     renderLista();
   if (state.currentPage === 'dashboard') renderDashboard();
+}
+
+/* ═══════════════════════════════════════
+   AJUSTES DA COBRANÇA (PIX / MENSAGEM)
+═══════════════════════════════════════ */
+function openSettingsModal() {
+  const settings = getSettings();
+  setVal('cfg-pix-key', settings.pixKey);
+  setVal('cfg-message-template', settings.messageTemplate);
+  document.getElementById('modal-settings').classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeSettingsModal() {
+  document.getElementById('modal-settings').classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
+function saveSettingsForm() {
+  const pixKey          = getVal('cfg-pix-key');
+  const messageTemplate = document.getElementById('cfg-message-template')?.value || '';
+
+  if (!pixKey)               { showToast('Informe a chave Pix', 'warning'); return; }
+  if (!messageTemplate.trim()) { showToast('Informe a mensagem de cobrança', 'warning'); return; }
+
+  saveSettings({ pixKey, messageTemplate });
+  closeSettingsModal();
+  showToast('Ajustes salvos!', 'success');
 }
 
 /* ═══════════════════════════════════════

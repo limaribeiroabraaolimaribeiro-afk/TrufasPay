@@ -126,6 +126,7 @@
         <button class="btn btn-sm btn-secondary" onclick="selectAll()">☑ Todos</button>
         <button class="btn btn-sm btn-secondary" onclick="selectAtrasados()">⚠️ Atrasados</button>
         <button class="btn btn-sm btn-ghost" onclick="clearSelection()">✕ Limpar</button>
+        <button class="btn btn-sm btn-ghost" onclick="openSettingsModal()">⚙️ Mensagem/Pix</button>
       </div>
 
       <!-- Bulk Actions Bar -->
@@ -270,6 +271,41 @@
 <!-- Nova Compra Modal -->
 <div id="modal-nova-compra" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-label="Nova compra">
   <!-- Content rendered dynamically by JS -->
+</div>
+
+<!-- Settings Modal (Pix / Mensagem de Cobrança) -->
+<div id="modal-settings" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-label="Ajustes da cobrança">
+  <div class="modal-sheet">
+    <div class="queue-handle"></div>
+
+    <div class="queue-header-row">
+      <span class="queue-title">⚙️ Ajustes da cobrança</span>
+    </div>
+
+    <div style="padding:0 20px 4px">
+
+      <div class="form-group">
+        <label class="form-label" for="cfg-pix-key">Chave Pix</label>
+        <input id="cfg-pix-key" type="text" class="form-control" placeholder="Ex: 00000000000">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="cfg-message-template">Mensagem de cobrança</label>
+        <textarea id="cfg-message-template" class="form-control form-control-textarea" style="min-height:160px"></textarea>
+        <div class="form-hint">Use {nome}, {valor}, {pix} e {quantidade} para personalizar a mensagem.</div>
+      </div>
+
+    </div>
+
+    <div class="queue-actions-wrap">
+      <button type="button" class="btn btn-primary btn-lg" onclick="saveSettingsForm()">
+        Salvar ajustes
+      </button>
+      <button type="button" class="btn btn-secondary" onclick="closeSettingsModal()">
+        Cancelar
+      </button>
+    </div>
+  </div>
 </div>
 
 <!-- Confirm Dialog -->
