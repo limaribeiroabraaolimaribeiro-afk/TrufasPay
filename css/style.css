@@ -1216,7 +1216,7 @@ img, svg { display: block; }
   }
 
   body {
-    background: linear-gradient(135deg, var(--primary-darker) 0%, var(--primary) 100%);
+    background: #F3F4F6;
   }
 
   #app {
@@ -1224,7 +1224,7 @@ img, svg { display: block; }
     box-shadow: none;
   }
 
-  /* Header becomes a wide top bar */
+  /* Header stays purple — the only "full bleed" roxo element on desktop */
   #app-header {
     max-width: 1280px;
     padding: 0 var(--content-pad);
@@ -1263,12 +1263,23 @@ img, svg { display: block; }
     display: none !important;
   }
 
-  /* Page content area: centered, generous width */
-  .page {
+  /* Main content becomes a white dashboard panel, separated from the
+     purple header by the page's neutral background */
+  #main-content {
     max-width: 1180px;
+    margin: calc(var(--header-h) + 24px) auto 24px;
+    background: #fff;
+    border-radius: 24px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.08);
+    min-height: calc(100vh - var(--header-h) - 48px);
+  }
+
+  /* Page content area: padding inside the white panel */
+  .page {
+    max-width: none;
     width: 100%;
-    margin: 0 auto;
-    min-height: calc(100vh - var(--header-h));
+    margin: 0;
+    min-height: 0;
     padding: var(--content-pad);
     padding-bottom: var(--content-pad);
   }
@@ -1309,6 +1320,13 @@ img, svg { display: block; }
     max-width: 480px;
     margin: 0 auto;
   }
+
+  /* List rows get a faint background so they read against the white panel */
+  .sale-card,
+  .sale-card-mini {
+    background: var(--gray-50);
+  }
+  .sale-card.selected { background: #fff; }
 
   /* Forms stay readable width, centered */
   .form-page-content {
